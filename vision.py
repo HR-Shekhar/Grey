@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+import math
 import cv2
 from config import CAM_WIDTH, CAM_HEIGHT
 
@@ -14,11 +15,23 @@ class GreyVision(threading.Thread):
         self.face_detected = False
         self.running = True
 
+        # Behavioral metrics
+        self.face_area = 0.0
+        self.area_delta = 0.0
+        self.speed = 0.0
+        self.head_tilt = 0.0      # In degrees
+        self.sweep_count = 0      # Horizontal side-to-side rapid sweeps
+        
+        self.last_x = 0.0
+        self.last_y = 0.0
+        self.last_area = 0.0
+        self.last_dir_x = 0
+        self.sweep_timer = time.time()
+
         model_path = os.path.join(os.path.dirname(__file__), "face_detection_yunet.onnx")
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found at {model_path}. Please download face_detection_yunet.onnx.")
+            raise FileNotFoundError(f"Model file not found at {model_path}.")
 
-        # Initialize OpenCV DNN YuNet detector
         self.detector = cv2.FaceDetectorYN.create(
             model=model_path,
             config="",
@@ -38,8 +51,7 @@ class GreyVision(threading.Thread):
             print("[Grey Vision] ERROR: Failed to open /dev/video0")
             return
 
-        print("[Grey Vision] OpenCV YuNet Neural Face Tracker active on /dev/video0.")
-        last_state = False
+        print("[Grey Vision] Behavioral Neural Vision active.")
 
         while self.running:
             ret, frame = cap.read()
@@ -47,46 +59,65 @@ class GreyVision(threading.Thread):
                 time.sleep(0.02)
                 continue
 
-            # Ensure input size matches frame dimensions
             h, w, _ = frame.shape
             self.detector.setInputSize((w, h))
-
-            # Run inference
             _, faces = self.detector.detect(frame)
 
+            now = time.time()
+
             if faces is not None and len(faces) > 0:
-                # Find the single LARGEST face by area (bbox: [x, y, w, h])
-                biggest_face = None
-                max_area = 0.0
+                biggest_face = max(faces, key=lambda f: f[2] * f[3])
+                fx, fy, fw, fh = biggest_face[0:4]
+                area = (fw * fh) / (w * h)
 
-                for face in faces:
-                    fx, fy, fw, fh = face[0:4]
-                    area = fw * fh
-                    if area > max_area:
-                        max_area = area
-                        biggest_face = (fx, fy, fw, fh)
+                # Normalized coords (-1.0 to 1.0)
+                cx = (fx + fw / 2.0) / w
+                cy = (fy + fh / 2.0) / h
+                norm_x = -(cx - 0.5) * 2.0
+                norm_y = (cy - 0.5) * 2.0
 
-                if biggest_face:
-                    fx, fy, fw, fh = biggest_face
-                    cx = (fx + fw / 2.0) / w
-                    cy = (fy + fh / 2.0) / h
+                # 1. Approach Velocity (Area growth)
+                if self.last_area > 0.0:
+                    self.area_delta = area - self.last_area
+                self.last_area = area
+                self.face_area = area
 
-                    # Invert X for natural mirror tracking
-                    norm_x = -(cx - 0.5) * 2.0
-                    norm_y = (cy - 0.5) * 2.0
+                # 2. Movement Speed
+                dx = norm_x - self.last_x
+                dy = norm_y - self.last_y
+                self.speed = math.hypot(dx, dy)
 
-                    self.target_x = max(-1.0, min(1.0, norm_x))
-                    self.target_y = max(-1.0, min(1.0, norm_y))
-                    self.face_detected = True
+                # 3. Sweep / Erratic Motion Detector
+                current_dir = 1 if dx > 0.07 else (-1 if dx < -0.07 else 0)
+                if current_dir != 0 and current_dir != self.last_dir_x:
+                    self.sweep_count += 1
+                    self.last_dir_x = current_dir
 
-                    if not last_state:
-                        print("[Grey] Locked onto closest face.")
-                        last_state = True
+                # 3.0 second rolling window
+                if now - self.sweep_timer > 3.0:
+                    self.sweep_count = 0
+                    self.sweep_timer = now
+
+                # 4. Head Tilt (Landmarks: Right Eye @ index 4, Left Eye @ index 6)
+                r_eye_x, r_eye_y = biggest_face[4], biggest_face[5]
+                l_eye_x, l_eye_y = biggest_face[6], biggest_face[7]
+                eye_dx = l_eye_x - r_eye_x
+                eye_dy = l_eye_y - r_eye_y
+                self.head_tilt = abs(math.degrees(math.atan2(eye_dy, eye_dx)))
+
+                self.last_x = norm_x
+                self.last_y = norm_y
+
+                self.target_x = max(-1.0, min(1.0, norm_x))
+                self.target_y = max(-1.0, min(1.0, norm_y))
+                self.face_detected = True
             else:
                 self.face_detected = False
-                if last_state:
-                    print("[Grey] Lost target. Idling.")
-                    last_state = False
+                self.speed = 0.0
+                self.area_delta = 0.0
+                self.head_tilt = 0.0
+                self.sweep_count = 0
+                self.last_area = 0.0
 
             time.sleep(0.02)
 
