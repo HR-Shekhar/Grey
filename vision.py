@@ -3,6 +3,7 @@ import time
 import threading
 import math
 import cv2
+import platform
 from config import CAM_WIDTH, CAM_HEIGHT
 
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
@@ -42,7 +43,10 @@ class GreyVision(threading.Thread):
         )
 
     def run(self):
-        cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+        if platform.system() == "Windows":
+            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        else:
+            cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
