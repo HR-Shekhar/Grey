@@ -13,16 +13,19 @@ class GreyNetworkNode(threading.Thread):
         self.on_hop_in = on_hop_in
         self.running = True
 
-        # Setup UDP socket with broadcast enabled
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Setup UDP socket
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        
+        # Bind to all interfaces on the port
         self.sock.bind(('', BROADCAST_PORT))
 
     def run(self):
+        print(f"[NetHop] Network listener running for device '{self.device_id}'. Active: {self.is_active}")
         while self.running:
             try:
-                data, addr = self.sock.recvfrom(1024)
+                data, addr = self.sock.recvfrom(2048)
                 if not data:
                     continue
 
@@ -30,9 +33,9 @@ class GreyNetworkNode(threading.Thread):
                 sender = msg.get("sender")
                 action = msg.get("action")
 
-                # If we are currently dormant and another device tells us to take over
+                # If WE are dormant, and SOMEONE ELSE sent a HOP_IN broadcast:
                 if not self.is_active and action == "HOP_IN" and sender != self.device_id:
-                    print(f"[NetHop] Received hop command from {sender}! Activating...")
+                    print(f"[NetHop] Inbound hop from '{sender}' received! Becoming ACTIVE.")
                     self.is_active = True
                     if self.on_hop_in:
                         self.on_hop_in()
@@ -41,18 +44,28 @@ class GreyNetworkNode(threading.Thread):
                 time.sleep(0.05)
 
     def send_hop(self):
-        """Sends broadcast to other devices and makes this device dormant."""
+        """Sends broadcast to wake up other devices and puts this device into dormant state."""
         msg = {
             "sender": self.device_id,
             "action": "HOP_IN",
             "timestamp": time.time()
         }
         data = json.dumps(msg).encode('utf-8')
-        # Broadcast to entire local subnet
-        self.sock.sendto(data, ('<broadcast>', BROADCAST_PORT))
+        
+        # Send broadcast to standard 255.255.255.255
+        try:
+            self.sock.sendto(data, ('255.255.255.255', BROADCAST_PORT))
+            # Also send to fallback '<broadcast>' for cross-platform compatibility
+            self.sock.sendto(data, ('<broadcast>', BROADCAST_PORT))
+        except Exception as e:
+            print(f"[NetHop] Send error: {e}")
+
         self.is_active = False
-        print(f"[NetHop] Sent HOP_IN broadcast. Becoming dormant.")
+        print(f"[NetHop] Sent HOP_IN broadcast from '{self.device_id}'. Now DORMANT.")
 
     def stop(self):
         self.running = False
-        self.sock.close()
+        try:
+            self.sock.close()
+        except:
+            pass

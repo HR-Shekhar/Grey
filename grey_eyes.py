@@ -22,36 +22,39 @@ def main():
     renderer = EyeRenderer(screen, width, height)
     vision = GreyVision()
     vision.start()
-
     voice = GreyVoice()
 
-    # --- Device Configuration ---
-    DEVICE_ID = "pi_device_1"
+    # --- DEVICE CONFIGURATION ---
+    # On Pi: DEVICE_ID = "pi_1", START_ACTIVE = True
+    # On Laptop: DEVICE_ID = "laptop_win", START_ACTIVE = False
+    DEVICE_ID = "pi_1"
     START_ACTIVE = True
 
     renderer.is_dormant = not START_ACTIVE
 
     def on_received_hop():
-        print("[Grey Network] Inbound hop detected! Waking up...")
+        """Executed when remote device jumps away and sends the hop to us."""
+        print(f"[{DEVICE_ID}] Received jump! Landing now...")
+        renderer.is_dormant = False
         renderer.start_landing()
         voice.speak("HAPPY")
 
     net = GreyNetworkNode(device_id=DEVICE_ID, is_active=START_ACTIVE, on_hop_in=on_received_hop)
     net.start()
 
-    # --- Unified Audio Callbacks ---
     def handle_wake():
+        # Only respond to voice if THIS device is currently the active one
         if net.is_active and not renderer.is_dormant:
             renderer.set_emotion("CURIOUS")
             voice.speak("CURIOUS")
 
     def handle_hop():
+        # Only hop out if THIS device is currently active
         if net.is_active and not renderer.is_dormant:
-            print("[Grey Command] Executing hop out sequence...")
+            print(f"[{DEVICE_ID}] Hop command triggered! Jumping out...")
             voice.speak("SURPRISED")
             renderer.start_jump_out(on_finished=lambda: net.send_hop())
 
-    # Single microphone instance handling both wake-words and voice chatter
     listener = UnifiedAudioListener(
         model_path="model",
         on_wake=handle_wake,
@@ -111,22 +114,22 @@ def main():
                     elif event.key == pygame.K_h:
                         handle_hop()
                     elif event.key == pygame.K_j:
-                        renderer.start_landing()
-                        net.is_active = True
+                        on_received_hop()
 
-            # If dormant and settled, render blank frame and skip compute
+            # --- DORMANT LOOP ---
+            # If not active and no active animation, keep screen blank and bypass face tracking
             if not net.is_active and getattr(renderer, 'hop_stage', 'IDLE') == "IDLE":
+                renderer.is_dormant = True
                 renderer.draw()
                 pygame.display.flip()
                 continue
 
-            # Conversational chatter trigger
+            # --- ACTIVE CONVERSATION & VISION LOOP ---
             if listener.has_spoken() and renderer.emotion != "SLEEPY" and not voice.is_speaking and listener.state != "WAITING_COMMAND":
                 renderer.set_emotion("CURIOUS")
                 current_emotion = "CURIOUS"
                 voice.speak("GIBBERISH")
 
-            # Behavioral Emotion Engine
             if now > manual_override_until:
                 if now < dizzy_lock_until or now < annoyed_lock_until:
                     pass
